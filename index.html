@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EC2 MySQL → Aurora — Migration & Network Reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f6f3ea; --card:#fffdf7; --ink:#211f1a; --muted:#6f6b61;
+    --accent:#11695a; --accent-soft:#e4efe9; --accent-line:#c4ddd2;
+    --clay:#a8501f; --clay-soft:#f4e6da; --clay-line:#e6cdb6;
+    --cool-soft:#e8eef3; --cool-line:#cdd9e1;
+    --line:#e0d9cd; --code-bg:#26241f; --code-ink:#ece7da;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:'Public Sans',-apple-system,sans-serif;
+    font-size:16px; line-height:1.7; -webkit-font-smoothing:antialiased;
+  }
+  .topbar{height:5px;background:var(--accent);}
+  .wrap{max-width:1160px;margin:0 auto;padding:0 28px;display:flex;gap:48px;align-items:flex-start;}
+
+  /* sidebar */
+  .side{
+    position:sticky;top:0;width:236px;flex:none;height:100vh;
+    padding:38px 0 38px;overflow-y:auto;
+  }
+  .side .brand{font-family:'Fraunces',serif;font-weight:600;font-size:19px;line-height:1.25;margin-bottom:4px;}
+  .side .brand span{color:var(--accent);}
+  .side .kicker{font-size:11.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--muted);margin-bottom:26px;}
+  .side nav a{
+    display:block;font-size:13.5px;color:var(--muted);text-decoration:none;
+    padding:5px 12px;border-left:2px solid var(--line);transition:.15s;
+  }
+  .side nav a:hover{color:var(--ink);border-left-color:var(--accent-line);}
+  .side nav a.active{color:var(--accent);border-left-color:var(--accent);font-weight:600;}
+  .side nav .grp{font-size:11px;letter-spacing:.11em;text-transform:uppercase;color:#a59f92;margin:20px 0 6px 12px;}
+
+  /* main */
+  main{flex:1;min-width:0;padding:48px 0 120px;max-width:780px;}
+  .hero{margin-bottom:46px;}
+  .hero .eyebrow{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:600;}
+  .hero h1{
+    font-family:'Fraunces',serif;font-weight:600;font-size:43px;line-height:1.1;
+    margin:14px 0 16px;letter-spacing:-.01em;
+  }
+  .hero p{font-size:17.5px;color:#4a473f;margin:0;max-width:60ch;}
+
+  section{margin-bottom:52px;scroll-margin-top:24px;}
+  h2{
+    font-family:'Fraunces',serif;font-weight:600;font-size:27px;line-height:1.2;
+    margin:0 0 6px;display:flex;align-items:baseline;gap:14px;letter-spacing:-.01em;
+  }
+  h2 .num{
+    font-size:14px;font-family:'JetBrains Mono',monospace;color:var(--accent);
+    font-weight:500;border:1.5px solid var(--accent-line);border-radius:6px;
+    padding:3px 9px;flex:none;position:relative;top:-3px;
+  }
+  h3{font-family:'Fraunces',serif;font-weight:600;font-size:18.5px;margin:30px 0 8px;}
+  .lead{color:var(--muted);margin:4px 0 22px;font-size:15.5px;}
+  p{margin:0 0 14px;}
+  a.inl{color:var(--accent);}
+  strong{font-weight:600;}
+  ul,ol{margin:0 0 16px;padding-left:22px;}
+  li{margin:6px 0;}
+  hr{border:none;border-top:1px solid var(--line);margin:42px 0;}
+
+  /* code */
+  pre{
+    background:var(--code-bg);color:var(--code-ink);border-radius:10px;
+    padding:16px 18px;overflow-x:auto;margin:14px 0 18px;
+    font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.65;
+  }
+  pre .c{color:#8f9c87;} /* comment */
+  code.k{
+    font-family:'JetBrains Mono',monospace;font-size:13px;
+    background:#ece7d8;border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;color:#5a3c1e;
+  }
+
+  /* callouts */
+  .callout{
+    border-radius:10px;padding:14px 18px;margin:18px 0;font-size:14.5px;
+    border:1px solid var(--line);background:var(--card);
+  }
+  .callout .lbl{
+    font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    font-weight:600;display:block;margin-bottom:4px;
+  }
+  .callout.tip{background:var(--accent-soft);border-color:var(--accent-line);}
+  .callout.tip .lbl{color:var(--accent);}
+  .callout.warn{background:var(--clay-soft);border-color:var(--clay-line);}
+  .callout.warn .lbl{color:var(--clay);}
+  .callout.note{background:#efece4;border-color:var(--line);}
+  .callout.note .lbl{color:var(--muted);}
+  .callout p:last-child{margin-bottom:0;}
+
+  /* figure */
+  figure{margin:24px 0;}
+  .diagram{width:100%;height:auto;display:block;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;}
+  figcaption{font-size:12.5px;color:var(--muted);text-align:center;margin-top:8px;font-style:italic;}
+  .diagram text{font-family:'Public Sans',sans-serif;}
+  .d-t{font-size:14px;font-weight:500;fill:var(--ink);}
+  .d-s{font-size:11.5px;fill:var(--muted);}
+  .d-l{font-size:11.5px;fill:#8a8578;}
+
+  /* table */
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600;}
+  tbody tr:last-child td{border-bottom:none;}
+
+  footer{max-width:780px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:20px;}
+
+  @media(max-width:900px){
+    .wrap{flex-direction:column;gap:0;padding:0 20px;}
+    .side{position:static;height:auto;width:100%;padding:26px 0 8px;}
+    .side nav{display:flex;flex-wrap:wrap;gap:2px;}
+    .side nav a{border-left:none;border-bottom:2px solid var(--line);padding:5px 10px;}
+    .side nav .grp{width:100%;margin:12px 0 2px;}
+    main{padding:24px 0 80px;}
+    .hero h1{font-size:33px;}
+  }
+</style>
+</head>
+<body>
+<div class="topbar"></div>
+<div class="wrap">
+
+  <aside class="side">
+    <div class="brand">EC2 MySQL <span>&rarr;</span> Aurora</div>
+    <div class="kicker">Migration &amp; Network Reference</div>
+    <nav id="toc">
+      <div class="grp">Foundations</div>
+      <a href="#overview">Overview</a>
+      <a href="#architecture">Target architecture</a>
+      <div class="grp">The migration</div>
+      <a href="#part1">1 · Build the network</a>
+      <a href="#part2">2 · Prepare the source DB</a>
+      <a href="#part3">3 · Back up the database</a>
+      <a href="#part4">4 · Create &amp; load Aurora</a>
+      <a href="#part5">5 · Binlog delta sync</a>
+      <a href="#part6">6 · Validate</a>
+      <a href="#part7">7 · Cut over</a>
+      <a href="#part8">8 · Clean up &amp; harden</a>
+      <div class="grp">Operating it</div>
+      <a href="#verify">Verification checks</a>
+      <a href="#pitfalls">Common pitfalls</a>
+      <a href="#reference">Quick reference</a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="hero">
+      <div class="eyebrow">Reference Guide</div>
+      <h1>Migrating a self-managed MySQL database to Amazon Aurora</h1>
+      <p>An end-to-end runbook for moving a large MySQL database off an EC2 instance
+      and onto a managed Aurora MySQL cluster &mdash; including the secure VPC network
+      it should live in &mdash; using a snapshot-and-replicate strategy.</p>
+    </div>
+
+    <section id="overview">
+      <h2><span class="num">00</span> Overview</h2>
+      <p class="lead">What this guide does, and when to use this approach.</p>
+      <p>This is the manual migration path used when a database is <strong>too large for
+      AWS Database Migration Service (DMS)</strong> to handle reliably. Instead of
+      copying table-by-table through a replication instance, you take one consistent
+      backup, load it into Aurora, and then let Aurora catch up on everything that
+      changed since &mdash; using native MySQL binary-log replication. A short cutover
+      at the end switches the application over.</p>
+
+      <h3>The two halves</h3>
+      <p>A proper migration is really two projects. <strong>The network</strong> &mdash;
+      a VPC with public and private subnets, NAT for outbound access, and a bastion for
+      administration &mdash; so the new database lives somewhere secure. And
+      <strong>the data move</strong> itself. Parts 1&ndash;8 below cover both, in order.</p>
+
+      <h3>Before you start</h3>
+      <ul>
+        <li><strong>Engine compatibility</strong> &mdash; the target Aurora MySQL major
+        version must be compatible with the source MySQL major version (for example,
+        source MySQL 8.0 &rarr; Aurora MySQL 3.x, which is 8.0-based).</li>
+        <li><strong>Measure the database</strong> &mdash; total size and the largest
+        tables. This drives the backup method and the expected catch-up time.</li>
+        <li><strong>Agree a downtime budget</strong> &mdash; the only real downtime is
+        the final cutover, usually a few minutes. Pick a low-traffic window.</li>
+        <li><strong>Freeze schema changes</strong> &mdash; avoid DDL on the source
+        during the migration; it can break replication.</li>
+      </ul>
+
+      <div class="callout note">
+        <span class="lbl">Adapt to your project</span>
+        <p>Placeholders appear in <code class="k">[square brackets]</code> &mdash; swap
+        in your own values. Names like <code class="k">repl_user</code> or bucket paths
+        are examples; use your own conventions.</p>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2><span class="num">A</span> Target architecture</h2>
+      <p class="lead">Where everything ends up, and why.</p>
+      <p>The design splits the VPC into a small, exposed <strong>public</strong> zone and
+      a protected <strong>private</strong> zone, spread across two availability zones.
+      Nothing valuable is directly reachable from the internet.</p>
+
+      <figure>
+        <svg class="diagram" viewBox="0 0 820 472" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="VPC architecture diagram">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M2 1L8 5L2 9" fill="none" stroke="#8a8578" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <rect x="330" y="18" width="160" height="44" rx="8" fill="#efece4" stroke="#d8d0c2"/>
+          <text class="d-t" x="410" y="45" text-anchor="middle">Internet</text>
+          <line x1="410" y1="64" x2="410" y2="97" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar)"/>
+          <rect x="330" y="100" width="160" height="44" rx="8" fill="#efece4" stroke="#d8d0c2"/>
+          <text class="d-t" x="410" y="127" text-anchor="middle">Internet gateway</text>
+          <line x1="410" y1="146" x2="410" y2="205" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar)"/>
+
+          <rect x="40" y="170" width="740" height="282" rx="18" fill="none" stroke="#b3aa99" stroke-width="1" stroke-dasharray="6 4"/>
+          <text class="d-l" x="62" y="193">VPC &middot; spans 2 availability zones</text>
+
+          <rect x="70" y="210" width="680" height="88" rx="10" fill="#e8eef3" stroke="#cdd9e1"/>
+          <text x="88" y="230" font-size="11.5" fill="#3a5566" font-weight="600">PUBLIC SUBNETS &times;2</text>
+          <rect x="110" y="240" width="270" height="46" rx="7" fill="#fffdf7" stroke="#cdd9e1"/>
+          <text class="d-t" x="245" y="268" text-anchor="middle">Bastion host</text>
+          <rect x="440" y="240" width="270" height="46" rx="7" fill="#fffdf7" stroke="#cdd9e1"/>
+          <text class="d-t" x="575" y="268" text-anchor="middle">NAT instances &times;2</text>
+
+          <rect x="70" y="322" width="680" height="112" rx="10" fill="#e4efe9" stroke="#c4ddd2"/>
+          <text x="88" y="342" font-size="11.5" fill="#11695a" font-weight="600">PRIVATE SUBNETS &times;2</text>
+          <rect x="110" y="352" width="270" height="64" rx="7" fill="#fffdf7" stroke="#c4ddd2"/>
+          <text class="d-t" x="245" y="379" text-anchor="middle">Application servers</text>
+          <text class="d-s" x="245" y="398" text-anchor="middle">web &middot; workers &middot; bots</text>
+          <rect x="440" y="352" width="270" height="64" rx="7" fill="#fffdf7" stroke="#c4ddd2"/>
+          <text class="d-t" x="575" y="379" text-anchor="middle">Aurora MySQL cluster</text>
+          <text class="d-s" x="575" y="398" text-anchor="middle">writer + reader instance</text>
+
+          <line x1="575" y1="350" x2="575" y2="290" stroke="#8a8578" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+          <text class="d-l" x="592" y="322">egress via NAT</text>
+        </svg>
+        <figcaption>The target VPC &mdash; exposed components are minimal; the database and apps are private.</figcaption>
+      </figure>
+
+      <p>The <strong>bastion host</strong> is the single controlled SSH entry point.
+      The <strong>NAT instances</strong> (one per availability zone) let private servers
+      reach the internet outbound &mdash; for patches and API calls &mdash; while
+      blocking unsolicited inbound traffic. The <strong>Aurora cluster</strong> and
+      <strong>application servers</strong> sit in private subnets with no public IP.</p>
+
+      <div class="callout tip">
+        <span class="lbl">NAT instance vs NAT gateway</span>
+        <p>AWS offers a managed <strong>NAT Gateway</strong> (simple, reliable, but
+        ~$32+/month each plus data charges) and the self-managed <strong>NAT
+        instance</strong> (a tiny EC2 box, far cheaper, but you patch it yourself).
+        Either works &mdash; choose based on budget and how much you want to manage.</p>
+      </div>
+    </section>
+
+    <hr>
+
+    <section id="part1">
+      <h2><span class="num">01</span> Build the network</h2>
+      <p class="lead">Stand up the VPC the database will live in.</p>
+      <p>Skip this part if you already have a VPC with private subnets, NAT, and a
+      bastion. Otherwise, build it in this order &mdash; each step depends on the one
+      before it.</p>
+      <ol>
+        <li><strong>Create the VPC</strong> with a CIDR block such as
+        <code class="k">10.0.0.0/16</code>.</li>
+        <li><strong>Create four subnets</strong> &mdash; two public and two private,
+        one of each in two availability zones (e.g. <code class="k">ap-south-1a</code>
+        and <code class="k">ap-south-1b</code>).</li>
+        <li><strong>Create an Internet Gateway</strong> and attach it to the VPC.</li>
+        <li><strong>Route tables</strong> &mdash; a public route table with
+        <code class="k">0.0.0.0/0 &rarr; Internet Gateway</code>, associated with the
+        two public subnets. A private route table per AZ (you fill in its internet
+        route in the next step).</li>
+        <li><strong>Launch the NAT</strong> &mdash; one NAT instance (or NAT Gateway)
+        in each public subnet. For a NAT <em>instance</em>, you must
+        <strong>disable the source/destination check</strong>, or it cannot forward
+        traffic:
+          <pre>aws ec2 modify-instance-attribute \
+  --instance-id [nat-instance-id] --no-source-dest-check</pre>
+        </li>
+        <li><strong>Finish the private route tables</strong> &mdash; in each one, add
+        <code class="k">0.0.0.0/0 &rarr; [that AZ's NAT]</code>.</li>
+        <li><strong>Launch the bastion host</strong> &mdash; a small instance in a
+        public subnet, with a public IP (or Elastic IP).</li>
+        <li><strong>Security groups</strong> &mdash; bastion: inbound SSH (port 22)
+        from your office/home IP only. Private instances: inbound SSH allowed
+        <em>from the bastion's security group</em>, never from the internet.</li>
+      </ol>
+      <div class="callout tip">
+        <span class="lbl">Optional but worth it</span>
+        <p>Add an <strong>S3 VPC endpoint</strong>. Backup traffic to S3 then stays on
+        the AWS network instead of going out through NAT &mdash; faster and cheaper for
+        a large database transfer.</p>
+      </div>
+    </section>
+
+    <section id="part2">
+      <h2><span class="num">02</span> Prepare the source database</h2>
+      <p class="lead">Make the EC2 MySQL ready to be copied and replicated from.</p>
+
+      <h3>Enable binary logging</h3>
+      <p>Binary logging is what lets Aurora replay changes later. Edit the MySQL config
+      (<code class="k">/etc/my.cnf</code> or <code class="k">/etc/mysql/my.cnf</code>):</p>
+      <pre>[mysqld]
+server-id        = 1
+log_bin          = /var/log/mysql/mysql-bin.log
+binlog_format    = ROW
+binlog_row_image = FULL
+bind-address     = 0.0.0.0</pre>
+      <p>The <code class="k">bind-address</code> change is critical: with the default
+      <code class="k">127.0.0.1</code>, MySQL listens only for local connections and
+      Aurora could never reach it. <code class="k">0.0.0.0</code> makes it listen on the
+      network &mdash; safe here because the instance is in a private subnet and the
+      security group restricts who can connect.</p>
+
+      <h3>Set retention, create the replication user</h3>
+      <p>Set binlog retention generously so logs are not purged before Aurora finishes
+      catching up, then create the user Aurora will log in as:</p>
+      <pre><span class="c">-- keep binlogs for 7 days</span>
+SET GLOBAL binlog_expire_logs_seconds = 604800;
+
+CREATE USER 'repl_user'@'%' IDENTIFIED BY '[strong-password]';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl_user'@'%';
+FLUSH PRIVILEGES;</pre>
+      <p>Restart MySQL so <code class="k">bind-address</code> takes effect, then confirm:</p>
+      <pre>SHOW VARIABLES LIKE 'log_bin';        <span class="c">-- expect ON</span>
+SHOW MASTER STATUS;                   <span class="c">-- note File + Position</span></pre>
+      <p>Finally, open the source's security group for <strong>port 3306</strong> inbound
+      from the Aurora security group or its subnet range.</p>
+    </section>
+
+    <section id="part3">
+      <h2><span class="num">03</span> Back up the database</h2>
+      <p class="lead">Take one consistent copy &mdash; without straining production.</p>
+      <p>The job of the <strong>snapshot worker</strong> &mdash; a temporary, powerful,
+      memory-optimized instance &mdash; is to produce the backup off to the side, so the
+      live production server is never loaded.</p>
+      <ol>
+        <li><strong>Snapshot the production data volume.</strong> Take an EBS snapshot
+        of the volume holding the database files.</li>
+        <li><strong>Create a volume</strong> from that snapshot and attach it to the
+        snapshot worker. The worker now holds a frozen, consistent copy.</li>
+        <li><strong>Back it up</strong> on the worker. For a large database, a physical
+        backup with Percona XtraBackup is fastest:
+          <pre>xtrabackup --backup  --target-dir=/backup/full --user=root --password=[pw]
+xtrabackup --prepare --target-dir=/backup/full</pre>
+        </li>
+        <li><strong>Record the binlog position.</strong> XtraBackup writes it to
+        <code class="k">xtrabackup_binlog_info</code> &mdash; the binlog file name and
+        position. You need this exact pair in Part&nbsp;5.</li>
+        <li><strong>Upload to S3:</strong>
+          <pre>aws s3 cp /backup/full s3://[my-db-migration]/full/ --recursive</pre>
+        </li>
+      </ol>
+      <div class="callout note">
+        <span class="lbl">Alternative: logical backup</span>
+        <p>For a smaller database, a logical dump works too: <code class="k">mydumper</code>
+        for a parallel dump, or
+        <code class="k">mysqldump --single-transaction --master-data=2</code> (the
+        <code class="k">--master-data=2</code> flag records the binlog position into the
+        dump). Physical backups scale better for large data.</p>
+      </div>
+    </section>
+
+    <section id="part4">
+      <h2><span class="num">04</span> Create &amp; load Aurora</h2>
+      <p class="lead">Stand up the cluster and load the bulk of the data.</p>
+      <ol>
+        <li>In the RDS console, choose <strong>Create database &rarr; Restore from
+        Amazon S3</strong>.</li>
+        <li>Select <strong>Aurora MySQL</strong> with a compatible engine version.</li>
+        <li>Point it at the S3 location holding the XtraBackup files. Aurora builds the
+        cluster directly from them.</li>
+        <li>Place it in your VPC's <strong>private</strong> subnet group; attach the
+        security group from Part&nbsp;2.</li>
+        <li>Wait for the cluster status to reach <strong>Available</strong>. This
+        creates the cluster and its first instance &mdash; the writer.</li>
+        <li><strong>Add a reader instance</strong> for high availability and read
+        scaling. It attaches to the shared cluster storage &mdash; no data copy needed.</li>
+      </ol>
+      <div class="callout note">
+        <span class="lbl">If you used a logical dump</span>
+        <p>Create an empty Aurora cluster instead, then load the dump with
+        <code class="k">mysql</code> or <code class="k">myloader</code> pointed at the
+        cluster's writer endpoint.</p>
+      </div>
+    </section>
+
+    <section id="part5">
+      <h2><span class="num">05</span> Binlog delta sync</h2>
+      <p class="lead">Close the gap between the backup and "now".</p>
+      <p>The backup is a snapshot from a moment in the past. While you were backing up
+      and loading, the live database kept taking writes. Binary-log replication replays
+      every one of those changes into Aurora and then keeps it current in real time.</p>
+
+      <figure>
+        <svg class="diagram" viewBox="0 0 820 264" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Binlog replication flow">
+          <defs>
+            <marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M2 1L8 5L2 9" fill="none" stroke="#8a8578" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <text class="d-l" x="115" y="40" text-anchor="middle">live application writes</text>
+          <line x1="115" y1="50" x2="115" y2="96" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar2)"/>
+
+          <rect x="30" y="100" width="170" height="64" rx="8" fill="#f4e6da" stroke="#e6cdb6"/>
+          <text class="d-t" x="115" y="128" text-anchor="middle">Source MySQL</text>
+          <text class="d-s" x="115" y="146" text-anchor="middle">on EC2</text>
+
+          <rect x="252" y="100" width="156" height="64" rx="8" fill="#fffdf7" stroke="#e0d9cd"/>
+          <text class="d-t" x="330" y="128" text-anchor="middle">Binary log</text>
+          <text class="d-s" x="330" y="146" text-anchor="middle">every change</text>
+
+          <rect x="460" y="100" width="186" height="64" rx="8" fill="#e4efe9" stroke="#c4ddd2"/>
+          <text class="d-t" x="553" y="128" text-anchor="middle">Aurora replica thread</text>
+          <text class="d-s" x="553" y="146" text-anchor="middle">reads &amp; applies</text>
+
+          <rect x="698" y="100" width="92" height="64" rx="8" fill="#e4efe9" stroke="#c4ddd2"/>
+          <text class="d-t" x="744" y="128" text-anchor="middle">Aurora</text>
+          <text class="d-s" x="744" y="146" text-anchor="middle">current</text>
+
+          <line x1="200" y1="132" x2="248" y2="132" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar2)"/>
+          <line x1="408" y1="132" x2="456" y2="132" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar2)"/>
+          <line x1="646" y1="132" x2="694" y2="132" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar2)"/>
+          <text class="d-l" x="432" y="92" text-anchor="middle">streamed over network</text>
+
+          <text class="d-l" x="410" y="212" text-anchor="middle">Repeats continuously &mdash; when Seconds_Behind_Source reaches 0, it is safe to cut over.</text>
+        </svg>
+        <figcaption>The delta sync &mdash; Aurora streams the source's binary log and stays current.</figcaption>
+      </figure>
+
+      <p>On the Aurora <strong>writer endpoint</strong>, register the source as an
+      external master using the binlog coordinates recorded in Part&nbsp;3, then start
+      replication:</p>
+      <pre>CALL mysql.rds_set_external_master(
+  '[source-host-or-ip]', 3306,
+  'repl_user', '[strong-password]',
+  '[binlog-file]', [binlog-position], 0);
+
+CALL mysql.rds_start_replication;</pre>
+      <p>Monitor the catch-up &mdash; watch the lag fall toward zero:</p>
+      <pre>SHOW REPLICA STATUS\G   <span class="c">-- older Aurora 5.7: SHOW SLAVE STATUS</span></pre>
+      <ul>
+        <li><code class="k">Replica_IO_Running</code> and
+        <code class="k">Replica_SQL_Running</code> &mdash; both should be
+        <strong>Yes</strong>.</li>
+        <li><code class="k">Seconds_Behind_Source</code> &mdash; should trend toward
+        <strong>0</strong>.</li>
+        <li><code class="k">Last_IO_Error</code> / <code class="k">Last_SQL_Error</code>
+        &mdash; should be empty.</li>
+      </ul>
+    </section>
+
+    <section id="part6">
+      <h2><span class="num">06</span> Validate</h2>
+      <p class="lead">Confirm the two databases agree before you commit.</p>
+      <ul>
+        <li><strong>Row counts</strong> &mdash; compare counts on the largest and most
+        important tables, source vs Aurora.</li>
+        <li><strong>Checksums</strong> &mdash; run a tool such as
+        <code class="k">pt-table-checksum</code> for a deeper integrity comparison.</li>
+        <li><strong>Application test</strong> &mdash; point a staging copy of the
+        application at the Aurora reader endpoint and confirm queries behave correctly.</li>
+        <li><strong>Spot-check</strong> &mdash; verify routines, triggers, and views
+        came across, not just table rows.</li>
+      </ul>
+    </section>
+
+    <section id="part7">
+      <h2><span class="num">07</span> Cut over</h2>
+      <p class="lead">The short, planned switch to Aurora.</p>
+      <p>Do this in the agreed maintenance window. With replication already near zero
+      lag, downtime is only a few minutes.</p>
+
+      <figure>
+        <svg class="diagram" viewBox="0 0 580 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cutover sequence">
+          <defs>
+            <marker id="ar3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M2 1L8 5L2 9" fill="none" stroke="#8a8578" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </marker>
+          </defs>
+          <g>
+            <rect x="100" y="36" width="380" height="52" rx="8" fill="#fffdf7" stroke="#e0d9cd"/>
+            <text class="d-t" x="290" y="67" text-anchor="middle">Put the application in maintenance mode</text>
+            <line x1="290" y1="88" x2="290" y2="118" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar3)"/>
+
+            <rect x="100" y="120" width="380" height="52" rx="8" fill="#fffdf7" stroke="#e0d9cd"/>
+            <text class="d-t" x="290" y="151" text-anchor="middle">Stop writes on the source database</text>
+            <line x1="290" y1="172" x2="290" y2="202" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar3)"/>
+
+            <rect x="100" y="204" width="380" height="52" rx="8" fill="#fffdf7" stroke="#e0d9cd"/>
+            <text class="d-t" x="290" y="235" text-anchor="middle">Wait until replication lag reaches 0</text>
+            <line x1="290" y1="256" x2="290" y2="286" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar3)"/>
+
+            <rect x="100" y="288" width="380" height="52" rx="8" fill="#fffdf7" stroke="#e0d9cd"/>
+            <text class="d-t" x="290" y="319" text-anchor="middle">Stop &amp; detach replication on Aurora</text>
+            <line x1="290" y1="340" x2="290" y2="370" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar3)"/>
+
+            <rect x="100" y="372" width="380" height="52" rx="8" fill="#fffdf7" stroke="#e0d9cd"/>
+            <text class="d-t" x="290" y="403" text-anchor="middle">Repoint the app to the Aurora endpoint</text>
+            <line x1="290" y1="424" x2="290" y2="454" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar3)"/>
+
+            <rect x="100" y="456" width="380" height="52" rx="8" fill="#e4efe9" stroke="#c4ddd2"/>
+            <text class="d-t" x="290" y="487" text-anchor="middle">Application live on Aurora &mdash; monitor</text>
+          </g>
+        </svg>
+        <figcaption>The cutover sequence &mdash; brief, ordered, and reversible up to the final step.</figcaption>
+      </figure>
+
+      <p>When the source is read-only and <code class="k">Seconds_Behind_Source</code>
+      shows <code class="k">0</code>, Aurora has every last change. Detach it from the
+      old master:</p>
+      <pre>CALL mysql.rds_stop_replication;
+CALL mysql.rds_reset_external_master;</pre>
+      <p>Then repoint the application's connection string (or DNS) to the Aurora
+      <strong>cluster writer endpoint</strong>, bring the app out of maintenance mode,
+      and monitor error rates and latency closely for the first hour.</p>
+    </section>
+
+    <section id="part8">
+      <h2><span class="num">08</span> Clean up &amp; harden</h2>
+      <p class="lead">Finish the job and secure the result.</p>
+      <ul>
+        <li><strong>Terminate the snapshot worker.</strong> It is temporary and
+        expensive &mdash; <em>terminate</em> it, do not just stop it (a stopped instance
+        still bills for its storage).</li>
+        <li><strong>Keep the old database as a fallback</strong> for a few days
+        (stopped, not deleted) in case a rollback is needed. Decommission once
+        confident.</li>
+        <li><strong>Delete the temporary S3 backup files.</strong></li>
+        <li><strong>Harden Aurora</strong> &mdash; automated backups, a sensible
+        retention period, CloudWatch alarms, and Performance Insights.</li>
+        <li><strong>Remove the temporary rule</strong> that allowed Aurora &rarr; source
+        on port 3306.</li>
+      </ul>
+    </section>
+
+    <hr>
+
+    <section id="verify">
+      <h2><span class="num">V</span> Verification checks</h2>
+      <p class="lead">How to confirm each piece is actually doing its job.</p>
+
+      <h3>Is a NAT instance being used?</h3>
+      <p>A NAT instance does nothing on its own &mdash; its use lives in a
+      <strong>route table</strong>. In the VPC console, open a private subnet's route
+      table and look at the <code class="k">0.0.0.0/0</code> route. If its target is a
+      NAT instance, everything in that subnet uses it. Also confirm the NAT instance has
+      <strong>source/destination check disabled</strong>, and check its
+      <code class="k">NetworkOut</code> metric for live traffic.</p>
+
+      <h3>Is the bastion being used?</h3>
+      <p>The bastion's job is defined by a <strong>security-group chain</strong>: its own
+      group allows inbound SSH from approved IPs, and the private instances' groups allow
+      inbound SSH <em>from the bastion's group</em>. To see live use, connect to the
+      bastion and run <code class="k">last</code> &mdash; it lists recent SSH logins.</p>
+
+      <h3>What phase is the migration in?</h3>
+      <p>Connect to the Aurora writer endpoint and run
+      <code class="k">SHOW REPLICA STATUS\G</code>. Running replica threads pointed at
+      the EC2 source mean the delta sync is live and cutover has not happened. No
+      replication configured means it is either pre-sync or already cut over.</p>
+    </section>
+
+    <section id="pitfalls">
+      <h2><span class="num">!</span> Common pitfalls</h2>
+      <p class="lead">The mistakes that most often derail this migration.</p>
+      <div class="callout warn">
+        <span class="lbl">Binlog purged too early</span>
+        <p>If the source purges binary logs before Aurora catches up, replication breaks
+        and the initial load must be redone. Set retention generously in Part&nbsp;2.</p>
+      </div>
+      <div class="callout warn">
+        <span class="lbl">Wrong binlog format</span>
+        <p><code class="k">binlog_format</code> must be <code class="k">ROW</code>.
+        Statement-based logging causes subtle replication inconsistencies.</p>
+      </div>
+      <div class="callout warn">
+        <span class="lbl">DDL during migration</span>
+        <p>Schema changes on the source mid-migration frequently break replication.
+        Freeze DDL until after cutover.</p>
+      </div>
+      <div class="callout warn">
+        <span class="lbl">Forgotten essentials</span>
+        <p>Version incompatibility between source and Aurora; a security group that does
+        not allow Aurora to reach the source on 3306; or forgetting that
+        <code class="k">bind-address</code> changes need a MySQL restart.</p>
+      </div>
+    </section>
+
+    <section id="reference">
+      <h2><span class="num">Q</span> Quick reference</h2>
+      <p class="lead">The whole migration at a glance.</p>
+      <table>
+        <thead><tr><th>Part</th><th>What happens</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Build VPC, subnets, NAT, bastion</td><td>VPC / EC2 console</td></tr>
+          <tr><td>2</td><td>Enable binlog, replication user, bind-address</td><td>Source MySQL</td></tr>
+          <tr><td>3</td><td>Snapshot, back up, stage to S3</td><td>Snapshot worker &rarr; S3</td></tr>
+          <tr><td>4</td><td>Restore from S3, add a reader</td><td>Aurora cluster</td></tr>
+          <tr><td>5</td><td>Binlog replication delta sync</td><td>Source &rarr; Aurora</td></tr>
+          <tr><td>6</td><td>Row counts, checksums, app tests</td><td>Both databases</td></tr>
+          <tr><td>7</td><td>Stop writes, drain lag, repoint app</td><td>Cutover window</td></tr>
+          <tr><td>8</td><td>Terminate worker, harden Aurora</td><td>Post-migration</td></tr>
+        </tbody>
+      </table>
+      <div class="callout tip">
+        <span class="lbl">The one-line summary</span>
+        <p>Take one consistent backup &rarr; load it into Aurora &rarr; use binary-log
+        replication to catch up every change since &rarr; switch the application over
+        when the lag reaches zero.</p>
+      </div>
+    </section>
+
+    <footer>
+      EC2 MySQL &rarr; Aurora MySQL Migration &amp; Network Reference &mdash; a runbook
+      template. Adapt versions, names, and paths to your own environment. All commands
+      shown are read-safe to review; the migration steps modify infrastructure &mdash;
+      run them deliberately.
+    </footer>
+  </main>
+</div>
+
+<script>
+  (function(){
+    var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+    var map = {};
+    links.forEach(function(a){ map[a.getAttribute('href').slice(1)] = a; });
+    var obs = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          links.forEach(function(l){ l.classList.remove('active'); });
+          if(map[e.target.id]) map[e.target.id].classList.add('active');
+        }
+      });
+    }, { rootMargin: '-15% 0px -75% 0px' });
+    document.querySelectorAll('section[id]').forEach(function(s){ obs.observe(s); });
+  })();
+</script>
+</body>
+</html>
