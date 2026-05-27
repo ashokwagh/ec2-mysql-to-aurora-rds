@@ -145,7 +145,7 @@
       <a href="#part2">2 · Prepare the source DB</a>
       <a href="#part3">3 · Back up the database</a>
       <a href="#part4">4 · Create &amp; load Aurora</a>
-      <a href="#part5">5 · Binlog delta sync</a>
+      <a href="#part5">5 · Delta sync</a>
       <a href="#part6">6 · Validate</a>
       <a href="#part7">7 · Cut over</a>
       <a href="#part8">8 · Clean up &amp; harden</a>
@@ -168,12 +168,14 @@
     <section id="overview">
       <h2><span class="num">00</span> Overview</h2>
       <p class="lead">What this guide does, and when to use this approach.</p>
-      <p>This is the manual migration path used when a database is <strong>too large for
-      AWS Database Migration Service (DMS)</strong> to handle reliably. Instead of
-      copying table-by-table through a replication instance, you take one consistent
-      backup, load it into Aurora, and then let Aurora catch up on everything that
-      changed since &mdash; using native MySQL binary-log replication. A short cutover
-      at the end switches the application over.</p>
+      <p>This is the migration path used when a database is <strong>too large for
+      AWS Database Migration Service (DMS)</strong> to <strong>full-load</strong>
+      reliably &mdash; a table-by-table copy of a very large database is slow and
+      failure-prone. Instead, you take one consistent backup and load it into Aurora in
+      bulk, then run a <strong>change-data-capture delta sync</strong> &mdash; via a DMS
+      CDC task (recommended) or native MySQL binlog replication &mdash; to catch up on
+      everything that changed since, and keep Aurora current until you switch over. A
+      short cutover at the end switches the application over.</p>
 
       <h3>The two halves</h3>
       <p>A proper migration is really two projects. <strong>The network</strong> &mdash;
@@ -310,7 +312,8 @@
       <p class="lead">Make the EC2 MySQL ready to be copied and replicated from.</p>
 
       <h3>Enable binary logging</h3>
-      <p>Binary logging is what lets Aurora replay changes later. Edit the MySQL config
+      <p>Binary logging is what lets the delta sync replay changes later &mdash; both
+      options in Part&nbsp;5 depend on it. Edit the MySQL config
       (<code class="k">/etc/my.cnf</code> or <code class="k">/etc/mysql/my.cnf</code>):</p>
       <pre>[mysqld]
 server-id        = 1
@@ -319,25 +322,29 @@ binlog_format    = ROW
 binlog_row_image = FULL
 bind-address     = 0.0.0.0</pre>
       <p>The <code class="k">bind-address</code> change is critical: with the default
-      <code class="k">127.0.0.1</code>, MySQL listens only for local connections and
-      Aurora could never reach it. <code class="k">0.0.0.0</code> makes it listen on the
-      network &mdash; safe here because the instance is in a private subnet and the
-      security group restricts who can connect.</p>
+      <code class="k">127.0.0.1</code>, MySQL listens only for local connections and the
+      delta-sync process could never reach it. <code class="k">0.0.0.0</code>
+      makes it listen on the network &mdash; safe here because the instance is in a
+      private subnet and the security group restricts who can connect.</p>
 
       <h3>Set retention, create the replication user</h3>
-      <p>Set binlog retention generously so logs are not purged before Aurora finishes
-      catching up, then create the user Aurora will log in as:</p>
+      <p>Set binlog retention generously so logs are not purged before the delta sync
+      finishes catching up, then create the user it will log in as:</p>
       <pre><span class="c">-- keep binlogs for 7 days</span>
 SET GLOBAL binlog_expire_logs_seconds = 604800;
 
+<span class="c">-- the delta sync logs in as this user. REPLICATION SLAVE +</span>
+<span class="c">-- CLIENT cover both options; DMS CDC additionally needs SELECT</span>
 CREATE USER 'repl_user'@'%' IDENTIFIED BY '[strong-password]';
 GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl_user'@'%';
+GRANT SELECT ON *.* TO 'repl_user'@'%';
 FLUSH PRIVILEGES;</pre>
       <p>Restart MySQL so <code class="k">bind-address</code> takes effect, then confirm:</p>
       <pre>SHOW VARIABLES LIKE 'log_bin';        <span class="c">-- expect ON</span>
 SHOW MASTER STATUS;                   <span class="c">-- note File + Position</span></pre>
       <p>Finally, open the source's security group for <strong>port 3306</strong> inbound
-      from the Aurora security group or its subnet range.</p>
+      from whatever runs the delta sync &mdash; the DMS replication instance's security
+      group, or the Aurora cluster's security group if you use native replication.</p>
     </section>
 
     <section id="part3">
@@ -398,14 +405,29 @@ xtrabackup --prepare --target-dir=/backup/full</pre>
     </section>
 
     <section id="part5">
-      <h2><span class="num">05</span> Binlog delta sync</h2>
+      <h2><span class="num">05</span> Delta sync</h2>
       <p class="lead">Close the gap between the backup and "now".</p>
       <p>The backup is a snapshot from a moment in the past. While you were backing up
-      and loading, the live database kept taking writes. Binary-log replication replays
-      every one of those changes into Aurora and then keeps it current in real time.</p>
+      and loading, the live database kept taking writes. The delta sync replays every
+      one of those changes into Aurora &mdash; starting from the exact binlog position
+      recorded with the backup &mdash; and then keeps Aurora current until cutover.</p>
+      <p>There are two ways to run it. <strong>AWS DMS</strong> in change-data-capture
+      mode is the recommended path; <strong>native MySQL binlog replication</strong> is
+      a lighter-weight alternative. Pick one &mdash; you do not need both.</p>
+
+      <div class="callout tip">
+        <span class="lbl">Which to choose</span>
+        <p><strong>Prefer DMS.</strong> As a managed service it gives you built-in
+        CloudWatch metrics, automatic retry on transient failures, optional row-level
+        data validation, and a clear task state &mdash; all of which make a large
+        migration easier to observe and trust. Native binlog replication needs no extra
+        infrastructure and has no hourly cost, but you monitor and recover it by hand;
+        choose it only when DMS is unavailable or the replication-instance cost is hard
+        to justify.</p>
+      </div>
 
       <figure>
-        <svg class="diagram" viewBox="0 0 820 264" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Binlog replication flow">
+        <svg class="diagram" viewBox="0 0 820 264" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="DMS CDC replication flow">
           <defs>
             <marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
               <path d="M2 1L8 5L2 9" fill="none" stroke="#8a8578" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -422,8 +444,8 @@ xtrabackup --prepare --target-dir=/backup/full</pre>
           <text class="d-t" x="330" y="128" text-anchor="middle">Binary log</text>
           <text class="d-s" x="330" y="146" text-anchor="middle">every change</text>
 
-          <rect x="460" y="100" width="186" height="64" rx="8" fill="#e4efe9" stroke="#c4ddd2"/>
-          <text class="d-t" x="553" y="128" text-anchor="middle">Aurora replica thread</text>
+          <rect x="460" y="100" width="186" height="64" rx="8" fill="#e8eef3" stroke="#cdd9e1"/>
+          <text class="d-t" x="553" y="128" text-anchor="middle">DMS CDC task</text>
           <text class="d-s" x="553" y="146" text-anchor="middle">reads &amp; applies</text>
 
           <rect x="698" y="100" width="92" height="64" rx="8" fill="#e4efe9" stroke="#c4ddd2"/>
@@ -435,14 +457,59 @@ xtrabackup --prepare --target-dir=/backup/full</pre>
           <line x1="646" y1="132" x2="694" y2="132" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar2)"/>
           <text class="d-l" x="432" y="92" text-anchor="middle">streamed over network</text>
 
-          <text class="d-l" x="410" y="212" text-anchor="middle">Repeats continuously &mdash; when Seconds_Behind_Source reaches 0, it is safe to cut over.</text>
+          <text class="d-l" x="410" y="212" text-anchor="middle">Repeats continuously &mdash; when DMS CDC latency reaches 0, it is safe to cut over.</text>
         </svg>
-        <figcaption>The delta sync &mdash; Aurora streams the source's binary log and stays current.</figcaption>
+        <figcaption>The delta sync &mdash; a DMS CDC task streams the source's binary log into Aurora.</figcaption>
       </figure>
 
-      <p>On the Aurora <strong>writer endpoint</strong>, register the source as an
-      external master using the binlog coordinates recorded in Part&nbsp;3, then start
-      replication:</p>
+      <h3>Option A &mdash; AWS DMS (recommended)</h3>
+      <p>A <strong>DMS task running in CDC-only mode</strong> reads the source binary
+      log from the recorded position and applies every change to Aurora. Set up its
+      components in the DMS console:</p>
+      <ol>
+        <li><strong>Create a replication instance.</strong> In the DMS console, create a
+        replication instance inside this VPC &mdash; use a replication subnet group
+        built from the two <strong>private</strong> subnets, and attach a security group
+        that can reach both the EC2 source (port 3306) and the Aurora writer.</li>
+        <li><strong>Create the endpoints.</strong> A <strong>source endpoint</strong>
+        pointing at the EC2 MySQL (host, 3306, the <code class="k">repl_user</code>
+        credentials) and a <strong>target endpoint</strong> pointing at the Aurora
+        <strong>cluster writer endpoint</strong>. Use <em>Test connection</em> on each
+        &mdash; both must succeed from the replication instance before continuing.</li>
+        <li><strong>Create a CDC-only task.</strong> Add a database migration task with
+        migration type <strong>Replicate data changes only</strong> (CDC only) &mdash;
+        no full load, because the backup already carried the bulk data.</li>
+        <li><strong>Set the CDC start point.</strong> Choose a custom start point and
+        give it the <em>native</em> binlog coordinates recorded in Part&nbsp;3 from
+        <code class="k">xtrabackup_binlog_info</code> &mdash; the binlog file and
+        position, in the form <code class="k">mysql-bin.000045:7892</code>. This tells
+        DMS to begin exactly where the backup ended &mdash; no gap, no overlap.</li>
+        <li><strong>Start the task.</strong> DMS reads the source binary log from that
+        position, applies each change to Aurora, then keeps following the log.</li>
+      </ol>
+      <div class="callout warn">
+        <span class="lbl">The start point must match the backup</span>
+        <p>The CDC start point has to be the exact binlog file and position captured
+        <em>at the moment of the backup</em>. Start too early and rows are applied
+        twice; start too late and changes are silently lost. The
+        <code class="k">xtrabackup_binlog_info</code> file is the source of truth.</p>
+      </div>
+      <p>Monitor the catch-up from the task's <strong>Table statistics</strong> tab and
+      from CloudWatch &mdash; watch the latency fall toward zero:</p>
+      <ul>
+        <li><code class="k">CDCLatencySource</code> &mdash; lag reading from the source
+        binlog; should trend toward <strong>0</strong>.</li>
+        <li><code class="k">CDCLatencyTarget</code> &mdash; lag applying changes to
+        Aurora; should also trend toward <strong>0</strong>.</li>
+        <li>Task <strong>status</strong> &mdash; should be <em>Running</em> with no
+        errors in the task's CloudWatch log.</li>
+      </ul>
+
+      <h3>Option B &mdash; native MySQL binlog replication</h3>
+      <p>Aurora can also replicate straight from the source as an external master
+      &mdash; no DMS task and no replication instance to run or pay for. On the Aurora
+      <strong>writer endpoint</strong>, register the source using the binlog coordinates
+      recorded in Part&nbsp;3, then start replication:</p>
       <pre>CALL mysql.rds_set_external_master(
   '[source-host-or-ip]', 3306,
   'repl_user', '[strong-password]',
@@ -470,6 +537,9 @@ CALL mysql.rds_start_replication;</pre>
         important tables, source vs Aurora.</li>
         <li><strong>Checksums</strong> &mdash; run a tool such as
         <code class="k">pt-table-checksum</code> for a deeper integrity comparison.</li>
+        <li><strong>DMS data validation</strong> &mdash; if the CDC task was created
+        with validation enabled, check its per-table validation state; DMS compares
+        source and target rows itself and flags mismatches.</li>
         <li><strong>Application test</strong> &mdash; point a staging copy of the
         application at the Aurora reader endpoint and confirm queries behave correctly.</li>
         <li><strong>Spot-check</strong> &mdash; verify routines, triggers, and views
@@ -500,11 +570,11 @@ CALL mysql.rds_start_replication;</pre>
             <line x1="290" y1="172" x2="290" y2="202" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar3)"/>
 
             <rect x="100" y="204" width="380" height="52" rx="8" fill="#fffdf7" stroke="#e0d9cd"/>
-            <text class="d-t" x="290" y="235" text-anchor="middle">Wait until replication lag reaches 0</text>
+            <text class="d-t" x="290" y="235" text-anchor="middle">Wait until delta-sync lag reaches 0</text>
             <line x1="290" y1="256" x2="290" y2="286" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar3)"/>
 
             <rect x="100" y="288" width="380" height="52" rx="8" fill="#fffdf7" stroke="#e0d9cd"/>
-            <text class="d-t" x="290" y="319" text-anchor="middle">Stop &amp; detach replication on Aurora</text>
+            <text class="d-t" x="290" y="319" text-anchor="middle">Stop the delta-sync replication</text>
             <line x1="290" y1="340" x2="290" y2="370" stroke="#8a8578" stroke-width="1.6" marker-end="url(#ar3)"/>
 
             <rect x="100" y="372" width="380" height="52" rx="8" fill="#fffdf7" stroke="#e0d9cd"/>
@@ -518,9 +588,13 @@ CALL mysql.rds_start_replication;</pre>
         <figcaption>The cutover sequence &mdash; brief, ordered, and reversible up to the final step.</figcaption>
       </figure>
 
-      <p>When the source is read-only and <code class="k">Seconds_Behind_Source</code>
-      shows <code class="k">0</code>, Aurora has every last change. Detach it from the
-      old master:</p>
+      <p>When the source is read-only and the delta-sync lag has reached
+      <code class="k">0</code>, Aurora has every last change. Stop whichever sync you
+      set up so nothing further is applied. For a <strong>DMS</strong> task:</p>
+      <pre><span class="c"># from the DMS console, or:</span>
+aws dms stop-replication-task \
+  --replication-task-arn [dms-task-arn]</pre>
+      <p>For <strong>native binlog replication</strong>, run on the Aurora writer:</p>
       <pre>CALL mysql.rds_stop_replication;
 CALL mysql.rds_reset_external_master;</pre>
       <p>Then repoint the application's connection string (or DNS) to the Aurora
@@ -535,14 +609,18 @@ CALL mysql.rds_reset_external_master;</pre>
         <li><strong>Terminate the snapshot worker.</strong> It is temporary and
         expensive &mdash; <em>terminate</em> it, do not just stop it (a stopped instance
         still bills for its storage).</li>
+        <li><strong>If you used DMS, delete the task, endpoints, and replication
+        instance.</strong> Once cutover is confirmed they are no longer needed &mdash;
+        the replication instance bills hourly for as long as it exists.</li>
         <li><strong>Keep the old database as a fallback</strong> for a few days
         (stopped, not deleted) in case a rollback is needed. Decommission once
         confident.</li>
         <li><strong>Delete the temporary S3 backup files.</strong></li>
         <li><strong>Harden Aurora</strong> &mdash; automated backups, a sensible
         retention period, CloudWatch alarms, and Performance Insights.</li>
-        <li><strong>Remove the temporary rule</strong> that allowed Aurora &rarr; source
-        on port 3306.</li>
+        <li><strong>Remove the temporary rule</strong> that allowed the delta sync
+        &mdash; the DMS replication instance or the Aurora cluster &mdash; to reach the
+        source on port 3306.</li>
       </ul>
     </section>
 
@@ -567,10 +645,13 @@ CALL mysql.rds_reset_external_master;</pre>
       bastion and run <code class="k">last</code> &mdash; it lists recent SSH logins.</p>
 
       <h3>What phase is the migration in?</h3>
-      <p>Connect to the Aurora writer endpoint and run
-      <code class="k">SHOW REPLICA STATUS\G</code>. Running replica threads pointed at
-      the EC2 source mean the delta sync is live and cutover has not happened. No
-      replication configured means it is either pre-sync or already cut over.</p>
+      <p>If the delta sync uses <strong>DMS</strong>, open the DMS console &mdash; or run
+      <code class="k">aws dms describe-replication-tasks</code> &mdash; and look at the
+      CDC task: a <em>Running</em> task pointed at the EC2 source means the sync is live
+      and cutover has not happened. If it uses <strong>native replication</strong>,
+      connect to the Aurora writer and run <code class="k">SHOW REPLICA STATUS\G</code>;
+      running replica threads mean the same thing. Either way, nothing configured means
+      it is pre-sync or already cut over.</p>
     </section>
 
     <section id="pitfalls">
@@ -578,8 +659,10 @@ CALL mysql.rds_reset_external_master;</pre>
       <p class="lead">The mistakes that most often derail this migration.</p>
       <div class="callout warn">
         <span class="lbl">Binlog purged too early</span>
-        <p>If the source purges binary logs before Aurora catches up, replication breaks
-        and the initial load must be redone. Set retention generously in Part&nbsp;2.</p>
+        <p>The delta sync &mdash; DMS CDC or native replication &mdash; reads the
+        source's binary log. If the source purges logs before the sync has consumed
+        them, it breaks and the load must be redone. Set retention generously in
+        Part&nbsp;2.</p>
       </div>
       <div class="callout warn">
         <span class="lbl">Wrong binlog format</span>
@@ -594,8 +677,9 @@ CALL mysql.rds_reset_external_master;</pre>
       <div class="callout warn">
         <span class="lbl">Forgotten essentials</span>
         <p>Version incompatibility between source and Aurora; a security group that does
-        not allow Aurora to reach the source on 3306; or forgetting that
-        <code class="k">bind-address</code> changes need a MySQL restart.</p>
+        not allow the delta sync &mdash; the DMS instance or Aurora &mdash; to reach the
+        source on 3306; or forgetting that <code class="k">bind-address</code> changes
+        need a MySQL restart.</p>
       </div>
     </section>
 
@@ -609,7 +693,7 @@ CALL mysql.rds_reset_external_master;</pre>
           <tr><td>2</td><td>Enable binlog, replication user, bind-address</td><td>Source MySQL</td></tr>
           <tr><td>3</td><td>Snapshot, back up, stage to S3</td><td>Snapshot worker &rarr; S3</td></tr>
           <tr><td>4</td><td>Restore from S3, add a reader</td><td>Aurora cluster</td></tr>
-          <tr><td>5</td><td>Binlog replication delta sync</td><td>Source &rarr; Aurora</td></tr>
+          <tr><td>5</td><td>Delta sync &mdash; DMS CDC, or native binlog</td><td>Source &rarr; Aurora</td></tr>
           <tr><td>6</td><td>Row counts, checksums, app tests</td><td>Both databases</td></tr>
           <tr><td>7</td><td>Stop writes, drain lag, repoint app</td><td>Cutover window</td></tr>
           <tr><td>8</td><td>Terminate worker, harden Aurora</td><td>Post-migration</td></tr>
@@ -617,9 +701,9 @@ CALL mysql.rds_reset_external_master;</pre>
       </table>
       <div class="callout tip">
         <span class="lbl">The one-line summary</span>
-        <p>Take one consistent backup &rarr; load it into Aurora &rarr; use binary-log
-        replication to catch up every change since &rarr; switch the application over
-        when the lag reaches zero.</p>
+        <p>Take one consistent backup &rarr; load it into Aurora &rarr; run a delta sync
+        (a DMS CDC task, preferred, or native binlog replication) to catch up every
+        change since &rarr; switch the application over when the lag reaches zero.</p>
       </div>
     </section>
 
